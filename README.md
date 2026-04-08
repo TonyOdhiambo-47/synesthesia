@@ -1,71 +1,59 @@
 # Synesthesia
 
-**A real-time gesture-controlled generative art engine.**
+A browser app that turns your webcam and microphone into a generative art instrument. You move your hands, the visuals respond. Sound in the room shifts color, density, and motion. There are five different visual modes you can switch between.
 
-Move your hands. Listen to the room. The screen paints itself.
+It's a side project I built to play with WebGL2 shaders, MediaPipe hand tracking, and the Web Audio API in one place.
 
----
+## The five modes
 
-## What Is This
+- **Nebula** — about 10,000 GPU particles drift around your hands like a fluid. Trails persist via framebuffer feedback. Audio drives emission rate and color.
+- **Mycelium** — branching networks grow out from your fingertips. More high-frequency sound, more branching. Clap and the network blooms.
+- **Topology** — a grid mesh deforms under your hands. Hand height becomes peaks and valleys. Bass makes slow rolling waves, treble makes sharp ripples.
+- **Calligraphy** — your index finger paints. Move fast and the stroke thins out, move slow and it pools. Open palm clears the canvas. Fist cycles brush styles.
+- **Cosmos** — a small N-body system. Left hand is a star, right hand is a black hole. Bass pushes particles outward, treble pulls them in. Clap triggers a supernova.
 
-Synesthesia turns your webcam and microphone into a generative art instrument. Hand
-movements drive particle systems, organic growth networks, mathematical surfaces,
-physics-driven calligraphy, and orbital mechanics — all rendered in real time via
-custom WebGL2 shaders. Ambient sound shapes color, density, speed, and behavior.
+There are also four color palettes (`aurora`, `ember`, `phantom`, `reef`) you can cycle with `P`.
 
-**Five modes. Four palettes. Infinite compositions. Zero AI.**
+## How it works
 
-## Modes
+The render loop is a ping-pong framebuffer setup: each frame, the previous frame is copied forward with a decay factor toward the palette background, then the active mode draws on top, then a presentation pass adds bloom, mild chromatic aberration, film grain, and a vignette.
 
-| Mode | What Happens |
-|------|--------------|
-| **Nebula** | 10,000 instanced GPU particles form a fluid nebula around your hands. Audio drives emission, color, and turbulence. Framebuffer feedback bakes luminous trails. |
-| **Mycelium** | Branching organic networks grow from your fingertips. Treble frequencies boost branching density; claps trigger blooms. |
-| **Topology** | A 96×56 mesh deforms under your palms. Hand height becomes peak/valley; bass and treble drive ripple speed. |
-| **Calligraphy** | Index finger paints physics-driven ink. Fast strokes thin out; volume controls boldness; gravity drips fresh ink. |
-| **Cosmos** | N-body orbital system. Left hand is a star, right hand is a black hole. Bass expands the system; treble collapses it. Clap triggers a supernova. |
+Hand landmarks come from MediaPipe Hands running in the browser. Audio analysis is a standard `AnalyserNode` pulling FFT data and deriving bass/mid/treble bands plus an RMS volume and a spectral centroid. A small classifier turns landmarks into discrete gestures (fist, open palm, pinch, point, clap, both fists).
 
-## Tech
-
-MediaPipe Hands · Web Audio API · WebGL2 (raw GLSL ES 3.00) · React 18 · TypeScript · Vite
-
-No Three.js. No TensorFlow.js. No AI. Pure math, physics, and shaders.
-
-## Architecture
+Particle systems use SoA `Float32Array` pools and `gl.drawArraysInstanced`. Shaders are GLSL ES 3.00, inlined as TypeScript strings to keep the build simple. Float16 (`RGBA16F`) framebuffers when the browser supports them, with an automatic RGBA8 fallback for older Safari.
 
 ```
 INPUT          PHYSICS         RENDER             OUTPUT
 ─────          ───────         ──────             ──────
 MediaPipe ──▶  Particle    ──▶ WebGL2          ──▶ PNG / WebM
-Hands          Systems         Fragment            Export
-                               Shaders
-WebAudio  ──▶  Flow Fields ──▶ FBO Ping-Pong  ──▶ Canvas
-Spectral       Attractors      Bloom + Grain
-Analysis       N-Body
+Hands          systems         fragment            export
+                               shaders
+WebAudio  ──▶  Flow fields ──▶ FBO ping-pong  ──▶ Canvas
+spectral       Attractors      Bloom + grain
+analysis       N-body
 ```
 
-The engine uses a ping-pong framebuffer: each frame, the previous frame is decayed
-toward the palette background and the active mode renders on top. A presentation
-pass adds chromatic aberration, gaussian bloom, film grain, and a vignette.
+## Stack
+
+React 18, TypeScript, Vite, raw WebGL2, MediaPipe Hands, Web Audio API. No Three.js, no TensorFlow.js, no model inference beyond what MediaPipe ships with.
 
 ## Controls
 
-| Input | Action |
-|-------|--------|
-| Move hands | Primary interaction (mode-specific) |
-| Both fists | Next mode |
-| Open palm (Calligraphy) | Clear canvas |
-| Fist (Calligraphy) | Cycle brush style |
-| Clap (hands meet) | Trigger event — bloom / supernova / clear |
-| `M` | Next mode |
-| `1`–`5` | Jump to specific mode |
+| Input | What it does |
+|---|---|
+| Move your hands | Whatever the current mode does with them |
+| Both fists at once | Next mode |
+| Clap (hands meet) | Mode-specific event (bloom, supernova, etc.) |
+| Open palm in Calligraphy | Clear the canvas |
+| Fist in Calligraphy | Cycle brush style |
+| `M` / `1`–`5` | Switch mode |
 | `P` | Next palette |
-| `G` | Gallery / auto-cycle mode |
-| `Space` | Screenshot (PNG) |
-| `R` | Start/stop video recording (WebM) |
-| `` ` `` | Toggle FPS counter |
+| `G` | Gallery mode (auto-cycles modes and palettes) |
+| `Space` | Save a PNG screenshot |
+| `R` | Start/stop recording a WebM video |
+| `` ` `` | Toggle the FPS counter |
 
-## Run Locally
+## Running it
 
 ```bash
 git clone https://github.com/TonyOdhiambo-47/synesthesia
@@ -74,59 +62,64 @@ npm install
 npm run dev
 ```
 
-Then open http://localhost:5173. Allow camera and microphone when prompted.
-Choose **Keyboard Only** on the landing page to skip the camera and drive the
-synthetic hand with your mouse.
+Then open http://localhost:5173 and allow camera + mic when prompted. If you'd rather not use the camera, click **Keyboard Only** on the landing page and your mouse will drive a single synthetic hand.
 
-## Build
+To build the static site:
 
 ```bash
 npm run build
 npm run preview
 ```
 
-Output is a static site in `dist/` — drop it on Vercel, Netlify, or any static host.
-No backend, no environment variables, no API keys.
+The output in `dist/` is a fully static bundle — no backend, no environment variables, no API keys. Drop it on Vercel, Netlify, GitHub Pages, or any static host.
 
-## Performance
+## Performance notes
 
-Targets 60fps at 1080p on a 2020 MacBook Air (M1). Particle physics runs on the
-CPU in pre-allocated `Float32Array` SoA buffers and uploads as instance data each
-frame. Rendering uses `gl.drawArraysInstanced` for the particle modes and
-`gl.drawElements` for the topology mesh. Float16 framebuffers (`RGBA16F`) keep
-HDR bloom believable.
+I was targeting 60fps at 1080p on an M1 MacBook Air. The big things that helped:
 
-## Project Structure
+- Particles live in pre-allocated `Float32Array` SoA buffers, not arrays of objects, so there's no per-frame allocation churn.
+- Only live particles are packed into the upload buffer each frame instead of always uploading the full pool.
+- Mycelium uses a fixed-size branch pool with an integer free-list — no `Array.shift()`, no `filter()` reallocations.
+- Calligraphy uses a ring buffer for ink stamps, again to avoid array shifts under input pressure.
+- The feedback FBO is RGBA16F when available, so bloom doesn't band.
+
+## Project layout
 
 ```
 src/
-├── main.tsx                 # React entry point
-├── App.tsx                  # Permission flow, keyboard, recording
+├── main.tsx                  # React entry
+├── App.tsx                   # Permissions, keyboard, recording, lifecycle
 ├── engine/
-│   └── Engine.ts            # Render loop, FBO ping-pong, mode/palette state
+│   └── Engine.ts             # Render loop, FBO ping-pong, mode + palette state
 ├── input/
-│   ├── HandTracker.ts       # MediaPipe Hands wrapper
-│   ├── AudioAnalyzer.ts     # Spectral analysis: bass/mid/treble/centroid/onset
-│   └── GestureClassifier.ts # Landmarks → gesture events
+│   ├── HandTracker.ts        # MediaPipe Hands wrapper
+│   ├── AudioAnalyzer.ts      # FFT bands, RMS, centroid, onset detection
+│   └── GestureClassifier.ts  # Landmarks → discrete gestures
 ├── render/
-│   ├── WebGLRenderer.ts     # WebGL2 context, FBOs, shader compilation
-│   └── shaders.ts           # All GLSL ES 3.00 sources (inlined)
+│   ├── WebGLRenderer.ts      # WebGL2 context, shader compile, FBO management
+│   └── shaders.ts            # GLSL ES 3.00 sources, inlined
 ├── modes/
-│   ├── Mode.ts              # Abstract mode interface
-│   ├── NebulaMode.ts        # 10K instanced particles
-│   ├── MyceliumMode.ts      # Branching organic networks
-│   ├── TopologyMode.ts      # Deforming mesh grid
-│   ├── CalligraphyMode.ts   # Ink physics
-│   └── CosmosMode.ts        # Orbital N-body
+│   ├── Mode.ts               # Abstract mode interface
+│   ├── NebulaMode.ts
+│   ├── MyceliumMode.ts
+│   ├── TopologyMode.ts
+│   ├── CalligraphyMode.ts
+│   └── CosmosMode.ts
 ├── ui/
-│   ├── Landing.tsx          # Title screen with ambient canvas
-│   └── HUD.tsx              # Auto-hiding overlay
+│   ├── Landing.tsx           # Title screen with an ambient canvas behind it
+│   └── HUD.tsx               # Auto-hiding overlay
 └── utils/
-    ├── math.ts              # noise, flow, lerp, clamp
-    ├── palettes.ts          # aurora · ember · phantom · reef
-    └── types.ts             # shared types
+    ├── math.ts               # noise, flow, lerp, clamp
+    ├── palettes.ts
+    └── types.ts
 ```
+
+## Known limitations
+
+- Mobile is not really supported. The MediaPipe model and 60fps shader pipeline are too heavy on most phones, and the gesture vocabulary assumes a desktop framing.
+- The screenshot is at the canvas's render resolution, not a separate 4K rerender. Good enough for most displays but it's not gallery-print quality.
+- The MediaPipe Hands model is loaded from a CDN at startup, so the first run needs network access.
 
 ## Author
 
-**Tony Odhiambo** · MIT '28
+Tony Odhiambo
