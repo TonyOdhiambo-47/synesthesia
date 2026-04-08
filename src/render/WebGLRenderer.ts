@@ -20,8 +20,9 @@ export class WebGLRenderer {
   height = 0;
   dpr = 1;
 
-  // Fullscreen quad VAO.
+  // Fullscreen quad VAO + VBO.
   quadVAO!: WebGLVertexArrayObject;
+  quadVBO!: WebGLBuffer;
 
   // Ping-pong FBOs for trail feedback.
   fboA!: Framebuffer;
@@ -65,6 +66,7 @@ export class WebGLRenderer {
     if (this.fboA) this.destroyFBO(this.fboA);
     if (this.fboB) this.destroyFBO(this.fboB);
     if (this.quadVAO) gl.deleteVertexArray(this.quadVAO);
+    if (this.quadVBO) gl.deleteBuffer(this.quadVBO);
   }
 
   // Hard-clear both ping-pong FBOs to a known background color.
@@ -93,6 +95,7 @@ export class WebGLRenderer {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
     this.quadVAO = vao;
+    this.quadVBO = vbo;
   }
 
   resize() {

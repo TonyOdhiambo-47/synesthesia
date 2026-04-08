@@ -72,11 +72,14 @@ export class Engine {
 
   private starting = false;
   private started = false;
+  private destroyed = false;
   private rafId = 0;
-  private screenshotResolver: ((url: string) => void) | null = null;
+  // A queue of pending screenshot requests; flushed in order on the next presented frame.
+  // Each entry is { resolve, reject } so we can fail them on stop/destroy instead of hanging.
+  private screenshotQueue: Array<{ resolve: (s: string) => void; reject: (e: Error) => void }> = [];
 
   async start(opts: { camera: boolean; mic: boolean }) {
-    if (this.starting || this.started) return;
+    if (this.starting || this.started || this.destroyed) return;
     this.starting = true;
     this.noCamera = !opts.camera;
     if (opts.camera) {
@@ -87,9 +90,12 @@ export class Engine {
         this.hands = null;
         this.noCamera = true;
       }
+      // destroy() may have run during the await above.
+      if (this.destroyed) { this.starting = false; this.hands?.destroy(); this.hands = null; return; }
     }
     if (opts.mic) {
       try { await this.audio.init(); } catch (e) { console.warn('Audio init failed', e); }
+      if (this.destroyed) { this.starting = false; this.audio.destroy(); return; }
     }
     this.running = true;
     this.started = true;
@@ -101,9 +107,12 @@ export class Engine {
     this.running = false;
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;
+    this.failPendingScreenshots(new Error('Engine stopped before screenshot could be captured'));
   }
 
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     this.stop();
     try { this.hands?.destroy(); } catch { /* ignore */ }
     try { this.audio.destroy(); } catch { /* ignore */ }
@@ -116,6 +125,12 @@ export class Engine {
     } catch { /* ignore */ }
     this.renderer.destroy();
     this.started = false;
+  }
+
+  private failPendingScreenshots(err: Error) {
+    const q = this.screenshotQueue;
+    this.screenshotQueue = [];
+    for (const r of q) r.reject(err);
   }
 
   private tick = () => {
@@ -139,16 +154,16 @@ export class Engine {
     this.cb.onAudio?.(audioData);
 
     // Gestures. Sort dual-hand events first so a "both fists → next mode"
-    // is processed before stale per-hand fists from the same frame.
+    // is processed before stale per-hand fists from the same frame. Once a
+    // mode switch fires, drop ALL remaining events from this frame — they
+    // belong to the old mode's input state and shouldn't bleed into the new mode.
     if (handData.hands.length > 0) {
       const events = this.gesture.classify(handData);
       events.sort((a, b) => Number(!!b.bothHands) - Number(!!a.bothHands));
-      let modeChanged = false;
       for (const ev of events) {
-        if (modeChanged && !ev.bothHands) continue; // drop stale per-hand events
         const before = this.modeIndex;
         this.handleGesture(ev);
-        if (this.modeIndex !== before) modeChanged = true;
+        if (this.modeIndex !== before) break;
       }
     }
 
@@ -204,10 +219,12 @@ export class Engine {
 
     this.renderer.swap();
 
-    // If a screenshot was requested, capture the canvas now (post-present, pre-clear).
-    if (this.screenshotResolver) {
-      try { this.screenshotResolver(this.renderer.canvas.toDataURL('image/png')); }
-      finally { this.screenshotResolver = null; }
+    // If screenshots were requested, capture the canvas now (post-present, pre-clear).
+    if (this.screenshotQueue.length > 0) {
+      const url = this.renderer.canvas.toDataURL('image/png');
+      const q = this.screenshotQueue;
+      this.screenshotQueue = [];
+      for (const r of q) r.resolve(url);
     }
 
     if (this.running) this.rafId = requestAnimationFrame(this.tick);
@@ -257,7 +274,13 @@ export class Engine {
 
   // Capture canvas as PNG. Because preserveDrawingBuffer is off, we wait for the
   // very next rendered frame and read it before the browser composites/clears.
+  // Multiple in-flight requests are queued and all flushed on the same next frame.
+  // If the engine is stopped or destroyed, the promise rejects immediately.
   screenshot(): Promise<string> {
-    return new Promise(resolve => { this.screenshotResolver = resolve; });
+    return new Promise((resolve, reject) => {
+      if (this.destroyed) return reject(new Error('Engine destroyed'));
+      if (!this.running) return reject(new Error('Engine not running'));
+      this.screenshotQueue.push({ resolve, reject });
+    });
   }
 }
