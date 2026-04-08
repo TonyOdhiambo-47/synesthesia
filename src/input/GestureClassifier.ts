@@ -13,6 +13,13 @@ const COOLDOWN = 700; // ms between repeats of the same gesture
 export class GestureClassifier {
   state: ClassifierState = { lastEvent: {}, lastBothFist: 0, lastClap: 0 };
 
+  // Wipe cooldown state. Called by the engine after a mode switch so that the
+  // next intentional gesture in the new mode is not suppressed by a stale
+  // cooldown timestamp committed during the switching frame.
+  reset() {
+    this.state = { lastEvent: {}, lastBothFist: 0, lastClap: 0 };
+  }
+
   classify(data: HandData): GestureEvent[] {
     const now = performance.now();
     const events: GestureEvent[] = [];

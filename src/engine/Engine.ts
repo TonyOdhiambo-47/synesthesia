@@ -241,11 +241,13 @@ export class Engine {
 
   cycleMode() {
     this.modeIndex = (this.modeIndex + 1) % this.modes.length;
+    this.gesture.reset();
     this.cb.onModeChange?.(this.modes[this.modeIndex].name);
   }
   setMode(i: number) {
     if (i < 0 || i >= this.modes.length) return;
     this.modeIndex = i;
+    this.gesture.reset();
     this.cb.onModeChange?.(this.modes[this.modeIndex].name);
   }
   cyclePalette() {
