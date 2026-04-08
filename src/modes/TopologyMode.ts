@@ -67,7 +67,7 @@ export class TopologyMode extends Mode {
     this.vao = vao;
   }
 
-  update(hands: HandData, audio: AudioData, _dt: number, _t: number): void {
+  update(hands: HandData, audio: AudioData, _dt: number, _ctx: ModeContext): void {
     const left = hands.hands.find(h => h.handedness === 'Left');
     const right = hands.hands.find(h => h.handedness === 'Right');
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;

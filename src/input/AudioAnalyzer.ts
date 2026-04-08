@@ -6,6 +6,7 @@ export class AudioAnalyzer {
   ctx: AudioContext | null = null;
   analyser: AnalyserNode | null = null;
   source: MediaStreamAudioSourceNode | null = null;
+  stream: MediaStream | null = null;
   freq!: Uint8Array;
   time!: Uint8Array;
   current: AudioData;
@@ -27,13 +28,25 @@ export class AudioAnalyzer {
       this.analyser.smoothingTimeConstant = 0.6;
       this.freq = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
       this.time = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.source = this.ctx.createMediaStreamSource(stream);
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.source = this.ctx.createMediaStreamSource(this.stream);
       this.source.connect(this.analyser);
       this.current.spectrum = this.freq;
     } catch (e) {
       console.warn('Audio init failed; continuing without sound input.', e);
     }
+  }
+
+  destroy() {
+    try { this.source?.disconnect(); } catch { /* ignore */ }
+    if (this.stream) {
+      for (const t of this.stream.getTracks()) t.stop();
+      this.stream = null;
+    }
+    try { this.ctx?.close(); } catch { /* ignore */ }
+    this.ctx = null;
+    this.analyser = null;
+    this.source = null;
   }
 
   update(): AudioData {

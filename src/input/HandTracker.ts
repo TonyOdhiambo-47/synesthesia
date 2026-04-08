@@ -9,16 +9,25 @@ declare global {
 
 const CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands/';
 
+// Idempotent script loader. If the same URL is requested twice we return the
+// same in-flight promise so a second caller actually waits for `onload` rather
+// than racing past a not-yet-executed <script> tag.
+const scriptPromises = new Map<string, Promise<void>>();
 function loadScript(src: string) {
-  return new Promise<void>((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement('script');
+  const existing = scriptPromises.get(src);
+  if (existing) return existing;
+  const p = new Promise<void>((resolve, reject) => {
+    const prior = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
+    if (prior && (prior as any)._loaded) return resolve();
+    const s = prior ?? document.createElement('script');
     s.src = src;
     s.crossOrigin = 'anonymous';
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error('Failed to load ' + src));
-    document.head.appendChild(s);
+    s.addEventListener('load', () => { (s as any)._loaded = true; resolve(); });
+    s.addEventListener('error', () => reject(new Error('Failed to load ' + src)));
+    if (!prior) document.head.appendChild(s);
   });
+  scriptPromises.set(src, p);
+  return p;
 }
 
 export class HandTracker {
@@ -27,6 +36,9 @@ export class HandTracker {
   current: HandData = { hands: [] };
   prevPositions: Map<string, { x: number; y: number; t: number }> = new Map();
   ready = false;
+  private stream: MediaStream | null = null;
+  private rafId = 0;
+  private stopped = false;
 
   constructor() {
     this.video = document.createElement('video');
@@ -50,22 +62,35 @@ export class HandTracker {
     });
     this.hands.onResults((res: any) => this.onResults(res));
 
-    const stream = await navigator.mediaDevices.getUserMedia({
+    this.stream = await navigator.mediaDevices.getUserMedia({
       video: { width: 640, height: 480, facingMode: 'user' },
       audio: false
     });
-    this.video.srcObject = stream;
+    this.video.srcObject = this.stream;
     await this.video.play();
 
     // Drive MediaPipe with RAF.
     const tick = async () => {
+      if (this.stopped) return;
       if (this.video.readyState >= 2) {
-        await this.hands.send({ image: this.video });
+        try { await this.hands.send({ image: this.video }); } catch { /* swallow */ }
       }
-      requestAnimationFrame(tick);
+      if (!this.stopped) this.rafId = requestAnimationFrame(tick);
     };
     tick();
     this.ready = true;
+  }
+
+  destroy() {
+    this.stopped = true;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.stream) {
+      for (const t of this.stream.getTracks()) t.stop();
+      this.stream = null;
+    }
+    try { this.hands?.close?.(); } catch { /* ignore */ }
+    this.video.srcObject = null;
+    this.video.remove();
   }
 
   private onResults(res: any) {

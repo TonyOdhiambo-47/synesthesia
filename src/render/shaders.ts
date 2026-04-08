@@ -79,23 +79,16 @@ export const NEBULA_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec2 a_corner;       // -1..1 quad
 layout(location = 1) in vec2 a_pos;           // particle position 0..1
-layout(location = 2) in vec2 a_vel;           // particle velocity (for stretch)
+layout(location = 2) in vec2 a_vel;           // particle velocity (unused, kept for layout compat)
 layout(location = 3) in float a_life;         // 0..1 (1 = fresh)
 layout(location = 4) in float a_size;         // size in NDC
 out vec2 v_uv;
 out float v_life;
-out vec2 v_vel;
 void main() {
   v_uv = a_corner;
   v_life = a_life;
-  v_vel = a_vel;
   vec2 ndc = a_pos * 2.0 - 1.0;
-  // Slight motion-blur stretch along velocity.
-  vec2 perp = vec2(-a_vel.y, a_vel.x);
-  float s = a_size;
-  vec2 offset = a_corner.x * (a_vel * 8.0 * s + vec2(s)) + a_corner.y * (perp * s + vec2(0.0, s));
-  // Simpler radial sprite:
-  offset = a_corner * s;
+  vec2 offset = a_corner * a_size;
   gl_Position = vec4(ndc + offset, 0.0, 1.0);
 }`;
 
@@ -103,7 +96,6 @@ export const NEBULA_FRAG = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 in float v_life;
-in vec2 v_vel;
 out vec4 outColor;
 uniform vec3 u_color;
 uniform float u_intensity;
@@ -117,15 +109,21 @@ void main() {
   outColor = vec4(col * a, a);
 }`;
 
-// --- Calligraphy ink stroke quad shader (with brush mask). ---
+// --- Calligraphy ink stroke quad shader (with brush mask, per-instance color). ---
 export const STROKE_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec2 a_corner;
 layout(location = 1) in vec2 a_pos;
 layout(location = 2) in float a_radius;
+layout(location = 3) in vec3 a_color;
+layout(location = 4) in float a_alpha;
 out vec2 v_uv;
+out vec3 v_color;
+out float v_alpha;
 void main() {
   v_uv = a_corner;
+  v_color = a_color;
+  v_alpha = a_alpha;
   vec2 ndc = a_pos * 2.0 - 1.0;
   gl_Position = vec4(ndc + a_corner * a_radius, 0.0, 1.0);
 }`;
@@ -133,16 +131,15 @@ void main() {
 export const STROKE_FRAG = `#version 300 es
 precision highp float;
 in vec2 v_uv;
+in vec3 v_color;
+in float v_alpha;
 out vec4 outColor;
-uniform vec3 u_color;
-uniform float u_alpha;
 void main() {
   float r = length(v_uv);
   if (r > 1.0) discard;
-  float a = pow(1.0 - r, 1.6) * u_alpha;
-  // Slight feathered edge with ink-pool darkening at center.
+  float a = pow(1.0 - r, 1.6) * v_alpha;
   float pool = 1.0 + (1.0 - r) * 0.4;
-  outColor = vec4(u_color * pool * a, a);
+  outColor = vec4(v_color * pool * a, a);
 }`;
 
 // --- Topology mesh shader (height field). ---

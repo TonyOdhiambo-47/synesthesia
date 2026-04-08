@@ -33,6 +33,15 @@ export default function App() {
     await engine.start({ camera, mic: true });
   };
 
+  // Engine teardown on unmount.
+  useEffect(() => () => {
+    try { engineRef.current?.destroy(); } catch { /* ignore */ }
+    engineRef.current = null;
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+      try { recorderRef.current.stop(); } catch { /* ignore */ }
+    }
+  }, []);
+
   // Keyboard shortcuts.
   useEffect(() => {
     if (!started) return;
@@ -69,9 +78,9 @@ export default function App() {
     };
   }, [started]);
 
-  const downloadScreenshot = () => {
+  const downloadScreenshot = async () => {
     const eng = engineRef.current; if (!eng) return;
-    const url = eng.screenshot();
+    const url = await eng.screenshot();
     const a = document.createElement('a');
     a.href = url;
     a.download = `synesthesia-${Date.now()}.png`;

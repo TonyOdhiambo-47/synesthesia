@@ -63,27 +63,60 @@ export class Engine {
       new CalligraphyMode(),
       new CosmosMode()
     ];
-    const ctx: ModeContext = { renderer: this.renderer, palette: PALETTES[0], time: 0 };
+    const ctx: ModeContext = { renderer: this.renderer, palette: PALETTES[0], time: 0, requestClear: false };
     this.ctxStash = ctx;
     for (const m of this.modes) m.init(ctx);
     this.cb.onModeChange?.(this.modes[0].name);
     this.cb.onPaletteChange?.(PALETTES[0].name);
   }
 
+  private starting = false;
+  private started = false;
+  private rafId = 0;
+  private screenshotResolver: ((url: string) => void) | null = null;
+
   async start(opts: { camera: boolean; mic: boolean }) {
+    if (this.starting || this.started) return;
+    this.starting = true;
     this.noCamera = !opts.camera;
     if (opts.camera) {
       this.hands = new HandTracker();
-      try { await this.hands.init(); } catch (e) { console.warn('Hands init failed', e); this.hands = null; this.noCamera = true; }
+      try { await this.hands.init(); } catch (e) {
+        console.warn('Hands init failed', e);
+        this.hands?.destroy();
+        this.hands = null;
+        this.noCamera = true;
+      }
     }
     if (opts.mic) {
       try { await this.audio.init(); } catch (e) { console.warn('Audio init failed', e); }
     }
     this.running = true;
-    requestAnimationFrame(this.tick);
+    this.started = true;
+    this.starting = false;
+    this.rafId = requestAnimationFrame(this.tick);
   }
 
-  stop() { this.running = false; }
+  stop() {
+    this.running = false;
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    this.rafId = 0;
+  }
+
+  destroy() {
+    this.stop();
+    try { this.hands?.destroy(); } catch { /* ignore */ }
+    try { this.audio.destroy(); } catch { /* ignore */ }
+    for (const m of this.modes) {
+      try { m.destroy(this.ctxStash); } catch { /* ignore */ }
+    }
+    try {
+      this.renderer.gl.deleteProgram(this.feedbackProgram.program);
+      this.renderer.gl.deleteProgram(this.presentProgram.program);
+    } catch { /* ignore */ }
+    this.renderer.destroy();
+    this.started = false;
+  }
 
   private tick = () => {
     if (!this.running) return;
@@ -105,10 +138,18 @@ export class Engine {
     const audioData = this.audio.update();
     this.cb.onAudio?.(audioData);
 
-    // Gestures.
+    // Gestures. Sort dual-hand events first so a "both fists → next mode"
+    // is processed before stale per-hand fists from the same frame.
     if (handData.hands.length > 0) {
       const events = this.gesture.classify(handData);
-      for (const ev of events) this.handleGesture(ev);
+      events.sort((a, b) => Number(!!b.bothHands) - Number(!!a.bothHands));
+      let modeChanged = false;
+      for (const ev of events) {
+        if (modeChanged && !ev.bothHands) continue; // drop stale per-hand events
+        const before = this.modeIndex;
+        this.handleGesture(ev);
+        if (this.modeIndex !== before) modeChanged = true;
+      }
     }
 
     // Gallery mode auto-cycling.
@@ -126,7 +167,14 @@ export class Engine {
     ctx.palette = PALETTES[this.paletteIndex];
     ctx.time = time;
     const mode = this.modes[this.modeIndex];
-    mode.update(handData, audioData, dt, time);
+    mode.update(handData, audioData, dt, ctx);
+
+    // Honor a clear request from the mode (e.g. Calligraphy palm gesture).
+    if (ctx.requestClear) {
+      const bg = ctx.palette.bg;
+      this.renderer.clearFBOs(bg[0], bg[1], bg[2], 1);
+      ctx.requestClear = false;
+    }
 
     // Step 1: feedback decay copy of previous frame into write FBO.
     this.renderer.bindFBO(this.renderer.write());
@@ -155,7 +203,14 @@ export class Engine {
     this.renderer.drawFullscreenQuad();
 
     this.renderer.swap();
-    requestAnimationFrame(this.tick);
+
+    // If a screenshot was requested, capture the canvas now (post-present, pre-clear).
+    if (this.screenshotResolver) {
+      try { this.screenshotResolver(this.renderer.canvas.toDataURL('image/png')); }
+      finally { this.screenshotResolver = null; }
+    }
+
+    if (this.running) this.rafId = requestAnimationFrame(this.tick);
   };
 
   handleGesture(ev: GestureEvent) {
@@ -200,8 +255,9 @@ export class Engine {
     };
   }
 
-  // Capture canvas as PNG (4K upscale by re-rendering at higher DPR).
-  screenshot(): string {
-    return this.renderer.canvas.toDataURL('image/png');
+  // Capture canvas as PNG. Because preserveDrawingBuffer is off, we wait for the
+  // very next rendered frame and read it before the browser composites/clears.
+  screenshot(): Promise<string> {
+    return new Promise(resolve => { this.screenshotResolver = resolve; });
   }
 }

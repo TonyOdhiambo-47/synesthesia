@@ -5,6 +5,9 @@ import { Mode, ModeContext } from './Mode';
 import { NEBULA_VERT, NEBULA_FRAG } from '../render/shaders';
 import type { HandData, AudioData } from '../utils/types';
 import { flow, clamp } from '../utils/math';
+// Note: a_vel is unused by the shader but the per-instance stride keeps the
+// existing buffer layout stable. The vertex attribute is bound but the shader
+// just discards it; this avoids gratuitous buffer rework.
 
 const PARTICLE_COUNT = 10000;
 
@@ -25,6 +28,7 @@ export class NebulaMode extends Mode {
   instanceVBO: WebGLBuffer | null = null;
   cornerVBO: WebGLBuffer | null = null;
   cursor = 0;
+  liveCount = 0;
   audioRef: AudioData | null = null;
   handsRef: HandData | null = null;
 
@@ -90,10 +94,11 @@ export class NebulaMode extends Mode {
     this.size[i] = 0.005 + Math.random() * 0.012;
   }
 
-  update(hands: HandData, audio: AudioData, dt: number, time: number): void {
+  update(hands: HandData, audio: AudioData, dt: number, ctx: ModeContext): void {
     this.audioRef = audio;
     this.handsRef = hands;
     const dtc = Math.min(dt, 0.05);
+    const time = ctx.time;
 
     // Spawn rate: tied to audio volume + presence of hands.
     const spawnRate = (40 + audio.volume * 600) * (hands.hands.length > 0 ? 1.5 : 0.4);
@@ -159,24 +164,28 @@ export class NebulaMode extends Mode {
       }
     }
 
-    // Pack instance data.
+    // Pack ONLY live particles into the upload buffer (compact).
     const data = this.instanceData;
+    let n = 0;
     for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const o = i * 6;
+      if (this.life[i] <= 0) continue;
+      const o = n * 6;
       data[o] = this.posX[i];
       data[o + 1] = this.posY[i];
       data[o + 2] = this.velX[i];
       data[o + 3] = this.velY[i];
       data[o + 4] = this.life[i];
       data[o + 5] = this.size[i];
+      n++;
     }
+    this.liveCount = n;
   }
 
   render(ctx: ModeContext): void {
     const { renderer, palette } = ctx;
     const gl = renderer.gl;
+    if (this.liveCount === 0) return;
 
-    // Render particles to current write FBO with additive blending.
     renderer.bindFBO(renderer.write());
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
@@ -184,9 +193,8 @@ export class NebulaMode extends Mode {
     gl.useProgram(this.program.program);
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceVBO);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.instanceData.subarray(0, this.liveCount * 6));
 
-    // Pick a color from the palette based on audio centroid.
     const audio = this.audioRef;
     const centroid = audio?.centroid || 0.5;
     const idx = Math.floor(clamp(centroid, 0, 0.999) * palette.colors.length);
@@ -194,7 +202,7 @@ export class NebulaMode extends Mode {
     gl.uniform3f(this.program.uniforms.u_color, c[0], c[1], c[2]);
     gl.uniform1f(this.program.uniforms.u_intensity, 0.7 + (audio?.volume || 0) * 1.5);
 
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, PARTICLE_COUNT);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.liveCount);
 
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);

@@ -78,7 +78,7 @@ export class CosmosMode extends Mode {
     }
   }
 
-  update(hands: HandData, audio: AudioData, dt: number, _t: number): void {
+  update(hands: HandData, audio: AudioData, dt: number, _ctx: ModeContext): void {
     this.audioRef = audio;
     const dtc = Math.min(dt, 0.05);
     const left = hands.hands.find(h => h.handedness === 'Left');
