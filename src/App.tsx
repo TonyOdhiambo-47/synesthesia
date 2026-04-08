@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Landing from './ui/Landing';
 import HUD from './ui/HUD';
 import { Engine } from './engine/Engine';
@@ -9,6 +9,13 @@ export default function App() {
   const engineRef = useRef<Engine | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  // Track captureStream tracks so we can stop them on record-stop / unmount.
+  const recordStreamRef = useRef<MediaStream | null>(null);
+  // Latest recording state for stable callbacks (avoids stale-closure bug in keydown).
+  const recordingRef = useRef(false);
+  // Guard against double-start and post-unmount async resumption of handleEnter.
+  const startingRef = useRef(false);
+  const mountedRef = useRef(true);
 
   const [started, setStarted] = useState(false);
   const [modeName, setModeName] = useState('Nebula');
@@ -18,11 +25,18 @@ export default function App() {
   const [showFps, setShowFps] = useState(false);
   const [recording, setRecording] = useState(false);
 
+  // Keep recordingRef in sync with state.
+  useEffect(() => { recordingRef.current = recording; }, [recording]);
+
   const handleEnter = async (camera: boolean) => {
+    if (startingRef.current || engineRef.current) return;
+    startingRef.current = true;
     setStarted(true);
     // Wait one frame so canvas is mounted.
     await new Promise(r => requestAnimationFrame(r));
-    const canvas = canvasRef.current!;
+    if (!mountedRef.current) { startingRef.current = false; return; }
+    const canvas = canvasRef.current;
+    if (!canvas) { startingRef.current = false; return; }
     const engine = new Engine(canvas, {
       onModeChange: setModeName,
       onPaletteChange: setPaletteName,
@@ -30,16 +44,81 @@ export default function App() {
       onAudio: setAudio
     });
     engineRef.current = engine;
-    await engine.start({ camera, mic: true });
+    try { await engine.start({ camera, mic: true }); }
+    finally { startingRef.current = false; }
+    // If component unmounted during start(), tear the engine down now.
+    if (!mountedRef.current) {
+      try { engine.destroy(); } catch { /* ignore */ }
+      engineRef.current = null;
+    }
   };
 
   // Engine teardown on unmount.
-  useEffect(() => () => {
-    try { engineRef.current?.destroy(); } catch { /* ignore */ }
-    engineRef.current = null;
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      try { recorderRef.current.stop(); } catch { /* ignore */ }
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      try { engineRef.current?.destroy(); } catch { /* ignore */ }
+      engineRef.current = null;
+      stopRecorderAndStream();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const stopRecorderAndStream = () => {
+    const mr = recorderRef.current;
+    if (mr && mr.state !== 'inactive') {
+      try { mr.stop(); } catch { /* ignore */ }
     }
+    recorderRef.current = null;
+    const stream = recordStreamRef.current;
+    if (stream) {
+      for (const t of stream.getTracks()) { try { t.stop(); } catch { /* ignore */ } }
+      recordStreamRef.current = null;
+    }
+  };
+
+  // Stable callbacks via refs — keydown listener never closes over a stale copy.
+  const downloadScreenshot = useCallback(async () => {
+    const eng = engineRef.current; if (!eng) return;
+    try {
+      const url = await eng.screenshot();
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `synesthesia-${Date.now()}.png`;
+      a.click();
+    } catch (e) {
+      console.warn('Screenshot failed:', e);
+    }
+  }, []);
+
+  const toggleRecord = useCallback(() => {
+    const eng = engineRef.current; if (!eng) return;
+    if (recordingRef.current) {
+      stopRecorderAndStream();
+      recordingRef.current = false;
+      setRecording(false);
+      return;
+    }
+    const canvas = canvasRef.current; if (!canvas) return;
+    const stream = canvas.captureStream(60);
+    const mr = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 12_000_000 });
+    recordedChunksRef.current = [];
+    mr.ondataavailable = e => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
+    mr.onstop = () => {
+      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `synesthesia-${Date.now()}.webm`;
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+    mr.start();
+    recorderRef.current = mr;
+    recordStreamRef.current = stream;
+    recordingRef.current = true;
+    setRecording(true);
   }, []);
 
   // Keyboard shortcuts.
@@ -76,42 +155,7 @@ export default function App() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('mousemove', onMouse);
     };
-  }, [started]);
-
-  const downloadScreenshot = async () => {
-    const eng = engineRef.current; if (!eng) return;
-    const url = await eng.screenshot();
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `synesthesia-${Date.now()}.png`;
-    a.click();
-  };
-
-  const toggleRecord = () => {
-    const eng = engineRef.current; if (!eng) return;
-    if (recording) {
-      recorderRef.current?.stop();
-      setRecording(false);
-      return;
-    }
-    const canvas = canvasRef.current!;
-    const stream = canvas.captureStream(60);
-    const mr = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 12_000_000 });
-    recordedChunksRef.current = [];
-    mr.ondataavailable = e => { if (e.data.size > 0) recordedChunksRef.current.push(e.data); };
-    mr.onstop = () => {
-      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `synesthesia-${Date.now()}.webm`;
-      a.click();
-      URL.revokeObjectURL(url);
-    };
-    mr.start();
-    recorderRef.current = mr;
-    setRecording(true);
-  };
+  }, [started, downloadScreenshot, toggleRecord]);
 
   return (
     <>
